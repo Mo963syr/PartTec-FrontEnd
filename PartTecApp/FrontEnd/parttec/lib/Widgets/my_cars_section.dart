@@ -1,7 +1,12 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:dio/dio.dart';
 import 'package:dropdown_search/dropdown_search.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:provider/provider.dart';
 
 import '../constants/car_data.dart';
 import '../providers/car_provider.dart';
@@ -187,7 +192,7 @@ class _MyCarsSectionState extends State<MyCarsSection> {
                       maxLength: 17,
                       decoration: const InputDecoration(
                         labelText: 'الرقم التسلسلي (VIN)',
-                        hintText: 'مثال: 1HGCM82633A123456',
+                        hintText: 'مثال: WAUZZZ4G4DN141331',
                         border: OutlineInputBorder(),
                         counterText: '',
                       ),
@@ -197,16 +202,7 @@ class _MyCarsSectionState extends State<MyCarsSection> {
                         ),
                         TextInputFormatter.withFunction((oldValue, newValue) {
                           final upper = newValue.text.toUpperCase();
-
-                          if (upper.contains('I') ||
-                              upper.contains('O') ||
-                              upper.contains('Q')) {
-                            return oldValue;
-                          }
-
-                          if (upper.length > 17) {
-                            return oldValue;
-                          }
+                          if (upper.length > 17) return oldValue;
 
                           return TextEditingValue(
                             text: upper,
@@ -321,7 +317,7 @@ class _MyCarsSectionState extends State<MyCarsSection> {
               ),
               const SizedBox(height: 12),
               SizedBox(
-                height: 380,
+                height: 470,
                 child: TabBarView(
                   physics: const BouncingScrollPhysics(),
                   children: [
@@ -604,7 +600,14 @@ class CarFormCard extends StatefulWidget {
 }
 
 class _CarFormCardState extends State<CarFormCard> {
+  static const String _geminiApiKey =
+  String.fromEnvironment('GEMINI_API_KEY');
+
   final _formKey = GlobalKey<FormState>();
+  final TextEditingController _vinController = TextEditingController();
+  final ImagePicker _picker = ImagePicker();
+
+  late final GeminiVinOcrService _ocrService;
 
   String? selectedBrandCode;
   String? selectedBrandName;
@@ -612,9 +615,17 @@ class _CarFormCardState extends State<CarFormCard> {
   String? selectedYear;
   String? serialNumber;
 
+  bool _isScanningVin = false;
+
   @override
   void initState() {
     super.initState();
+
+    _ocrService = GeminiVinOcrService(
+      apiKey: _geminiApiKey,
+      model: 'gemini-2.5-flash',
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final carProvider = context.read<CarProvider>();
       if (carProvider.brands.isEmpty) {
@@ -623,10 +634,113 @@ class _CarFormCardState extends State<CarFormCard> {
     });
   }
 
+  @override
+  void dispose() {
+    _vinController.dispose();
+    super.dispose();
+  }
+
   bool _isValidVin(String? value) {
     final v = (value ?? '').trim().toUpperCase();
     if (v.isEmpty) return true;
     return RegExp(r'^[A-HJ-NPR-Z0-9]{17}$').hasMatch(v);
+  }
+
+  Future<void> _pickVinImage(ImageSource source) async {
+    if (!_ocrService.isConfigured) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'لم يتم ضبط Gemini API Key. شغّل التطبيق باستخدام --dart-define=GEMINI_API_KEY=...',
+          ),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final XFile? file = await _picker.pickImage(
+        source: source,
+        imageQuality: 92,
+      );
+
+      if (file == null) return;
+
+      setState(() => _isScanningVin = true);
+
+      final vin = await _ocrService.extractVinFromImage(File(file.path));
+
+      if (!mounted) return;
+
+      if (vin == null || vin.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'لم يتم العثور على رقم شاصي واضح. قرّب البطاقة أكثر واجعل سطر رقم الهيكل واضحًا.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      setState(() {
+        serialNumber = vin;
+        _vinController.text = vin;
+      });
+
+      await Clipboard.setData(ClipboardData(text: vin));
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('✅ تم استخراج رقم الشاصي ونسخه إلى الحافظة'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('حدث خطأ أثناء قراءة الصورة: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isScanningVin = false);
+      }
+    }
+  }
+
+  Widget _buildVinActions() {
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed:
+            _isScanningVin ? null : () => _pickVinImage(ImageSource.camera),
+            icon: const Icon(Icons.photo_camera_outlined),
+            label: const Text('تصوير رقم الشاصي'),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 13),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed:
+            _isScanningVin ? null : () => _pickVinImage(ImageSource.gallery),
+            icon: const Icon(Icons.photo_library_outlined),
+            label: const Text('اختيار صورة'),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 13),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -656,6 +770,100 @@ class _CarFormCardState extends State<CarFormCard> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _sectionTitle("بيانات السيارة"),
+
+              TextFormField(
+                controller: _vinController,
+                textCapitalization: TextCapitalization.characters,
+                maxLength: 17,
+                decoration: InputDecoration(
+                  labelText: 'رقم الشاصي (VIN)',
+                  hintText: 'مثال: WAUZZZ4G4DN141331',
+                  prefixIcon: const Icon(Icons.confirmation_number),
+                  border: const OutlineInputBorder(),
+                  counterText: '',
+                  suffixIcon: _isScanningVin
+                      ? const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                      : (_vinController.text.isNotEmpty
+                      ? IconButton(
+                    tooltip: 'نسخ الرقم',
+                    icon: const Icon(Icons.copy_outlined),
+                    onPressed: () async {
+                      final text = _vinController.text.trim();
+                      if (text.isEmpty) return;
+
+                      await Clipboard.setData(
+                        ClipboardData(text: text),
+                      );
+
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('تم نسخ رقم الشاصي إلى الحافظة'),
+                        ),
+                      );
+                    },
+                  )
+                      : null),
+                ),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(
+                    RegExp(r'[A-Za-z0-9]'),
+                  ),
+                  TextInputFormatter.withFunction((oldValue, newValue) {
+                    final upper = newValue.text.toUpperCase();
+
+                    if (upper.length > 17) {
+                      return oldValue;
+                    }
+
+                    return TextEditingValue(
+                      text: upper,
+                      selection: TextSelection.collapsed(
+                        offset: upper.length,
+                      ),
+                    );
+                  }),
+                ],
+                validator: (value) {
+                  final v = (value ?? '').trim().toUpperCase();
+
+                  if (v.isEmpty) return null;
+                  if (v.length != 17) {
+                    return 'يجب أن يكون VIN من 17 خانة';
+                  }
+                  if (!_isValidVin(v)) {
+                    return 'VIN غير صالح';
+                  }
+                  return null;
+                },
+                onChanged: (value) {
+                  setState(() {
+                    serialNumber = value.toUpperCase();
+                  });
+                },
+              ),
+
+              const SizedBox(height: 10),
+              _buildVinActions(),
+              const SizedBox(height: 8),
+
+              const Text(
+                'يمكنك إدخال الرقم يدويًا أو تصوير البطاقة أو صورة رقم الهيكل مباشرة.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.black54,
+                  height: 1.4,
+                ),
+              ),
+
+              const SizedBox(height: 18),
 
               if (carProvider.isLoadingBrands)
                 const Center(
@@ -694,7 +902,6 @@ class _CarFormCardState extends State<CarFormCard> {
                       selectedBrandName = name;
                       selectedModel = null;
                       selectedYear = null;
-                      serialNumber = null;
                     });
 
                     if (code == null || code.isEmpty) return;
@@ -767,64 +974,6 @@ class _CarFormCardState extends State<CarFormCard> {
                 onChanged: (v) => setState(() => selectedYear = v),
               ),
 
-              if (selectedYear != null) ...[
-                const SizedBox(height: 16),
-                TextFormField(
-                  initialValue: serialNumber,
-                  textCapitalization: TextCapitalization.characters,
-                  maxLength: 17,
-                  decoration: const InputDecoration(
-                    labelText: 'الرقم التسلسلي (VIN)',
-                    hintText: 'مثال: 1HGCM82633A123456',
-                    prefixIcon: Icon(Icons.confirmation_number),
-                    border: OutlineInputBorder(),
-                    counterText: '',
-                  ),
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(
-                      RegExp(r'[A-Za-z0-9]'),
-                    ),
-                    TextInputFormatter.withFunction((oldValue, newValue) {
-                      final upper = newValue.text.toUpperCase();
-
-                      if (upper.contains('I') ||
-                          upper.contains('O') ||
-                          upper.contains('Q')) {
-                        return oldValue;
-                      }
-
-                      if (upper.length > 17) {
-                        return oldValue;
-                      }
-
-                      return TextEditingValue(
-                        text: upper,
-                        selection: TextSelection.collapsed(
-                          offset: upper.length,
-                        ),
-                      );
-                    }),
-                  ],
-                  validator: (value) {
-                    final v = (value ?? '').trim().toUpperCase();
-
-                    if (v.isEmpty) return null;
-                    if (v.length != 17) {
-                      return 'يجب أن يكون VIN من 17 خانة';
-                    }
-                    if (!_isValidVin(v)) {
-                      return 'VIN غير صالح. استخدم أرقامًا وحروفًا كبيرة بدون I أو O أو Q';
-                    }
-                    return null;
-                  },
-                  onChanged: (value) {
-                    setState(() {
-                      serialNumber = value.toUpperCase();
-                    });
-                  },
-                ),
-              ],
-
               const SizedBox(height: 18),
 
               SizedBox(
@@ -874,6 +1023,7 @@ class _CarFormCardState extends State<CarFormCard> {
                         selectedModel = null;
                         selectedYear = null;
                         serialNumber = null;
+                        _vinController.clear();
                       });
                     }
                   },
@@ -934,5 +1084,188 @@ class CardHeader extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+class GeminiVinOcrService {
+  GeminiVinOcrService({
+    required this.apiKey,
+    this.model = 'gemini-2.5-flash',
+    Dio? dio,
+  }) : _dio = dio ??
+      Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 20),
+          receiveTimeout: const Duration(seconds: 40),
+          sendTimeout: const Duration(seconds: 40),
+        ),
+      );
+
+  final Dio _dio;
+  final String apiKey;
+  final String model;
+
+  bool get isConfigured => apiKey.trim().isNotEmpty;
+
+  Future<String?> extractVinFromImage(File imageFile) async {
+    final bytes = await imageFile.readAsBytes();
+    final mimeType = _guessMimeType(imageFile.path);
+    final base64Image = base64Encode(bytes);
+
+    final url =
+        'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent';
+
+    final response = await _dio.post(
+      url,
+      data: {
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": _buildPrompt(),
+              },
+              {
+                "inlineData": {
+                  "mimeType": mimeType,
+                  "data": base64Image,
+                }
+              }
+            ]
+          }
+        ],
+        "generationConfig": {
+          "temperature": 0,
+          "responseMimeType": "application/json",
+          "responseSchema": {
+            "type": "OBJECT",
+            "properties": {
+              "vin": {
+                "type": "STRING",
+                "nullable": true,
+              },
+              "confidence_note": {
+                "type": "STRING",
+              }
+            },
+            "required": ["vin", "confidence_note"]
+          }
+        }
+      },
+      options: Options(
+        headers: {
+          'x-goog-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        validateStatus: (status) => status != null && status < 500,
+      ),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception(_extractErrorMessage(response.data) ??
+          'فشل طلب Gemini. status=${response.statusCode}');
+    }
+
+    final text = _extractTextFromResponse(response.data);
+    if (text == null || text.trim().isEmpty) {
+      return null;
+    }
+
+    final jsonMap = jsonDecode(text) as Map<String, dynamic>;
+    final rawVin = jsonMap['vin']?.toString();
+
+    if (rawVin == null || rawVin.trim().isEmpty || rawVin == 'null') {
+      return null;
+    }
+
+    return _postProcessVin(rawVin);
+  }
+
+  String _buildPrompt() {
+    return '''
+حلل هذه الصورة بعناية.
+
+المطلوب:
+- استخرج رقم الشاصي VIN فقط.
+- إذا كانت الصورة تحتوي على بطاقة عربية، فابحث أولًا عن السطر المرتبط بعبارة "رقم الهيكل".
+- إذا كان الرقم موجودًا بعد عبارة "رقم الهيكل"، فاستخرج الرقم فقط دون أي نص عربي.
+- تجاهل أي كلمات دخيلة أو أخطاء OCR مثل:
+SHARE, SHARED, SCAN, COPY, TEXT, IMAGE, PHOTO
+- أزل أي فراغات أو رموز أو فواصل داخل الرقم.
+- أعد الرقم النهائي فقط إذا كان بطول 17 خانة ويبدو VIN صحيحًا.
+- إذا لم تجد رقمًا صحيحًا بطول 17 فأعد vin = null.
+
+أعد النتيجة بصيغة JSON فقط.
+''';
+  }
+
+  String? _extractTextFromResponse(dynamic data) {
+    try {
+      final candidates = data['candidates'] as List?;
+      if (candidates == null || candidates.isEmpty) return null;
+
+      final content = candidates.first['content'];
+      if (content == null) return null;
+
+      final parts = content['parts'] as List?;
+      if (parts == null || parts.isEmpty) return null;
+
+      final text = parts.first['text']?.toString();
+      return text;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _extractErrorMessage(dynamic data) {
+    try {
+      if (data is Map) {
+        final error = data['error'];
+        if (error is Map && error['message'] != null) {
+          return error['message'].toString();
+        }
+        if (data['message'] != null) {
+          return data['message'].toString();
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  String _guessMimeType(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.heic')) return 'image/heic';
+    return 'image/jpeg';
+  }
+
+  String? _postProcessVin(String input) {
+    String vin = input.toUpperCase().trim();
+
+    vin = vin.replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+    for (final noise in const [
+      'SHARE',
+      'SHARED',
+      'SCAN',
+      'COPY',
+      'TEXT',
+      'PHOTO',
+      'IMAGE',
+      'VIN',
+    ]) {
+      vin = vin.replaceAll(noise, '');
+    }
+
+    vin = vin.replaceAll('O', '0');
+    vin = vin.replaceAll('I', '1');
+    vin = vin.replaceAll('Q', '0');
+
+    final match = RegExp(r'[A-HJ-NPR-Z0-9]{17}').firstMatch(vin);
+    if (match == null) return null;
+
+    final candidate = match.group(0)!;
+    if (candidate.length != 17) return null;
+    return candidate;
   }
 }

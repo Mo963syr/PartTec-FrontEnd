@@ -165,7 +165,7 @@ class OrderProvider with ChangeNotifier {
       }
 
       final url = Uri.parse(
-        '${AppSettings.serverurl}/order/deletespicificorder/$orderId',
+        '${AppSettings.serverurl}/order/deleteSpicificOrder/$orderId',
       );
 
       debugPrint('DELETE specific url: $url');
