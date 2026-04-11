@@ -27,7 +27,7 @@ import '../../widgets/gradient_background.dart';
 import '../../widgets/header_glow.dart';
 import '../../widgets/floating_search_bar.dart';
 import '../../widgets/category_chips_bar.dart';
-import '../../widgets/my_cars_section.dart';
+import '../../pages/my_cars_section.dart';
 import '../location/location_picker_sheet.dart';
 import '../../drawer/drawer_item.dart';
 

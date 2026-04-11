@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'providers/currency_provider.dart';
-import 'services/currency_service.dart';
+// import 'services/currency_service.dart';
 import 'providers/car_provider.dart';
-import 'package:parttec/screens/order/my_order_page.dart';
+// import 'package:parttec/screens/order/my_order_page.dart';
 import 'package:parttec/providers/purchases_provider.dart';
-import 'package:parttec/screens/employee/DeliveryDashboard.dart';
+// import 'package:parttec/screens/employee/DeliveryDashboard.dart';
 import 'package:parttec/providers/partprivate_provider.dart';
 import 'providers/home_provider.dart';
 import 'providers/parts_provider.dart';
@@ -19,10 +19,11 @@ import 'providers/auth_provider.dart';
 import 'providers/delivery_orders_provider.dart';
 import 'theme/app_theme.dart';
 import './screens/splashscreen/splash_screen.dart';
-import 'screens/auth/auth_page.dart';
+// import 'screens/auth/auth_page.dart';
 import 'providers/user_provider.dart';
-import 'screens/home/home_page.dart';
-import 'screens/supplier/supplier_dashboard.dart';
+// import 'screens/home/home_page.dart';
+// import 'screens/supplier/supplier_dashboard.dart';
+import 'providers/vin_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -46,6 +47,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => RecommendationsProvider()),
         ChangeNotifierProvider(create: (_) => PurchasesProvider()),
         ChangeNotifierProvider(create: (_) => UserProvider()),
+        ChangeNotifierProvider(create: (_) => VinProvider()),
         ChangeNotifierProvider(
             create: (_) => CurrencyProvider()..loadCurrency()),
         ChangeNotifierProvider(create: (_) => CarProvider()),
