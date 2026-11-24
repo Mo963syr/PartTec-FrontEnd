@@ -23,9 +23,29 @@ class PartDetailsPage extends StatefulWidget {
 }
 
 class _PartDetailsPageState extends State<PartDetailsPage> {
+  late final PageController _pageController;
+  int _currentImageIndex = 0;
+
+  List<String> get _galleryImages {
+    final list = <String>[];
+    if (widget.part.images.isNotEmpty) {
+      for (final img in widget.part.images) {
+        final clean = img.trim();
+        if (clean.isNotEmpty && !list.contains(clean)) {
+          list.add(clean);
+        }
+      }
+    }
+    if (list.isEmpty && widget.part.imageUrl.trim().isNotEmpty) {
+      list.add(widget.part.imageUrl.trim());
+    }
+    return list;
+  }
+
   @override
   void initState() {
     super.initState();
+    _pageController = PageController();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Provider.of<PartRatingProvider>(context, listen: false)
           .fetchRating(widget.part.id);
@@ -33,8 +53,30 @@ class _PartDetailsPageState extends State<PartDetailsPage> {
   }
 
   @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _openFullScreenGallery(int initialIndex) {
+    final images = _galleryImages;
+    if (images.isEmpty) return;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _FullScreenGalleryPage(
+          images: images,
+          initialIndex: initialIndex,
+          title: widget.part.name,
+        ),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final imageUrl = widget.part.imageUrl;
+    final images = _galleryImages;
 
     return Directionality(
       textDirection: TextDirection.rtl,
@@ -51,7 +93,7 @@ class _PartDetailsPageState extends State<PartDetailsPage> {
                   stretch: true,
                   elevation: 0,
                   backgroundColor: Colors.transparent,
-                  expandedHeight: 280,
+                  expandedHeight: 300,
                   leading: Padding(
                     padding:
                         const EdgeInsetsDirectional.only(start: 12, top: 8),
@@ -62,211 +104,369 @@ class _PartDetailsPageState extends State<PartDetailsPage> {
                   ),
                   flexibleSpace: FlexibleSpaceBar(
                     collapseMode: CollapseMode.parallax,
-                    background: ClipRRect(
-                      borderRadius: const BorderRadius.vertical(
-                        bottom: Radius.circular(24),
-                      ),
-                      child: imageUrl.isNotEmpty
-                          ? SizedBox.expand(
-                              child: Image.network(
-                                imageUrl,
-                                fit: BoxFit.contain,
-                                alignment: Alignment.center,
-                              ),
-                            )
-                          : Container(
-                              color: AppColors.chipBorder,
-                              alignment: Alignment.center,
-                              child: const Icon(Icons.image, size: 72),
+                    background: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: Colors.white.withOpacity(0.25),
+                              width: 1,
                             ),
-                    ),
-                  ),
-                ),
-                SliverToBoxAdapter(
-                  child: Transform.translate(
-                    offset: const Offset(0, -20),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Column(
-                        children: [
-                          _GlassCard(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(widget.part.name,
-                                    style: const TextStyle(
-                                        fontSize: 20,
-                                        fontWeight: FontWeight.w900,
-                                        color: AppColors.text)),
-                                const SizedBox(height: 10),
-                                Row(
+                          ),
+                          child: images.isNotEmpty
+                              ? Stack(
+                                  fit: StackFit.expand,
                                   children: [
-                                    Consumer<CurrencyProvider>(
-                                      builder: (context, currencyProv, _) {
-                                        return Text(
-                                          currencyProv
-                                              .formatPrice(widget.part.price),
-                                          style: const TextStyle(
-                                            fontSize: 22,
-                                            fontWeight: FontWeight.bold,
-                                            color: AppColors.primary,
+                                    PageView.builder(
+                                      controller: _pageController,
+                                      itemCount: images.length,
+                                      onPageChanged: (index) {
+                                        setState(
+                                            () => _currentImageIndex = index);
+                                      },
+                                      itemBuilder: (context, index) {
+                                        final url = images[index];
+                                        return GestureDetector(
+                                          onTap: () =>
+                                              _openFullScreenGallery(index),
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                              vertical: 10,
+                                            ),
+                                            child: Image.network(
+                                              url,
+                                              fit: BoxFit.contain,
+                                              alignment: Alignment.center,
+                                              loadingBuilder:
+                                                  (context, child, progress) {
+                                                if (progress == null) {
+                                                  return child;
+                                                }
+                                                return const Center(
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                  ),
+                                                );
+                                              },
+                                              errorBuilder: (_, __, ___) =>
+                                                  Container(
+                                                color: AppColors.chipBorder,
+                                                alignment: Alignment.center,
+                                                child: const Icon(
+                                                  Icons.broken_image_outlined,
+                                                  size: 64,
+                                                ),
+                                              ),
+                                            ),
                                           ),
                                         );
                                       },
                                     ),
-                                    const Spacer(),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 10, vertical: 6),
-                                      decoration: BoxDecoration(
-                                        color: Colors.green.withOpacity(0.1),
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                      child: Text(
-                                          widget.part.status ?? "غير محدد",
-                                          style: const TextStyle(
-                                              fontWeight: FontWeight.w700)),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 10),
-                                if (widget.part.serialNumber != null &&
-                                    widget.part.serialNumber!.isNotEmpty)
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.qr_code_2,
-                                          size: 18, color: AppColors.primary),
-                                      const SizedBox(width: 6),
-                                      Expanded(
-                                        child: Text(
-                                            "تسلسلي: ${widget.part.serialNumber}"),
-                                      ),
-                                      IconButton(
-                                        icon: const Icon(Icons.copy, size: 18),
-                                        onPressed: () async {
-                                          await Clipboard.setData(ClipboardData(
-                                              text: widget.part.serialNumber!));
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
-                                            const SnackBar(
-                                              content:
-                                                  Text("تم نسخ الرقم التسلسلي"),
+                                    if (images.length > 1)
+                                      Positioned(
+                                        top: 12,
+                                        left: 12,
+                                        child: Directionality(
+                                          textDirection: TextDirection.ltr,
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                              vertical: 4,
                                             ),
-                                          );
-                                        },
+                                            decoration: BoxDecoration(
+                                              color: Colors.black54,
+                                              borderRadius:
+                                                  BorderRadius.circular(12),
+                                            ),
+                                            child: Text(
+                                              '${_currentImageIndex + 1} / ${images.length}',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
                                       ),
-                                    ],
-                                  ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          _GlassCard(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _buildDetailRow(Icons.directions_car, "الموديل",
-                                    widget.part.model),
-                                _buildDetailRow(Icons.factory, "الماركة",
-                                    widget.part.manufacturer),
-                                _buildDetailRow(
-                                  Icons.event,
-                                  "سنة الصنع",
-                                  widget.part.year != 0
-                                      ? widget.part.year.toString()
-                                      : "غير محدد",
+                                    if (images.length > 1)
+                                      Positioned(
+                                        bottom: 10,
+                                        left: 0,
+                                        right: 0,
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: List.generate(
+                                            images.length,
+                                            (i) {
+                                              final active =
+                                                  i == _currentImageIndex;
+                                              return AnimatedContainer(
+                                                duration: const Duration(
+                                                  milliseconds: 200,
+                                                ),
+                                                margin:
+                                                    const EdgeInsets.symmetric(
+                                                  horizontal: 3,
+                                                ),
+                                                width: active ? 18 : 7,
+                                                height: 7,
+                                                decoration: BoxDecoration(
+                                                  color: active
+                                                      ? AppColors.primary
+                                                      : Colors.white
+                                                          .withOpacity(0.8),
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                )
+                              : Container(
+                                  color: AppColors.chipBorder,
+                                  alignment: Alignment.center,
+                                  child: const Icon(Icons.image, size: 72),
                                 ),
-                                _buildDetailRow(Icons.local_gas_station,
-                                    "نوع الوقود", widget.part.fuelType),
-                                _buildDetailRow(Icons.category, "الفئة",
-                                    widget.part.category),
-                                _buildDetailRow(
-                                    Icons.inventory,
-                                    "الكمية المتوفرة",
-                                    widget.part.count.toString()),
-                                const SizedBox(height: 10),
-                                const Text("الوصف",
-                                    style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 6),
-                                Text(widget.part.description ?? "لا يوجد وصف"),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          _GlassCard(
-                            child: Consumer<PartRatingProvider>(
-                              builder: (context, prov, _) {
-                                if (prov.isLoading) {
-                                  return const Center(
-                                    child: Padding(
-                                      padding: EdgeInsets.all(8.0),
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                    child: Column(
+                      children: [
+                        _GlassCard(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                widget.part.name,
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w900,
+                                  color: AppColors.text,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  Consumer<CurrencyProvider>(
+                                    builder: (context, currencyProv, _) {
+                                      return Text(
+                                        currencyProv
+                                            .formatPrice(widget.part.price),
+                                        style: const TextStyle(
+                                          fontSize: 22,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.primary,
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                  const Spacer(),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
                                     ),
-                                  );
-                                }
-
-                                if (prov.ratingsCount == 0) {
-                                  return const Text("لا توجد تقييمات بعد",
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.w600));
-                                }
-
-                                return Row(
+                                    decoration: BoxDecoration(
+                                      color: Colors.green.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Text(
+                                      widget.part.status.isNotEmpty
+                                          ? widget.part.status
+                                          : "غير محدد",
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 10),
+                              if (widget.part.serialNumber != null &&
+                                  widget.part.serialNumber!.isNotEmpty)
+                                Row(
                                   children: [
-                                    Row(
-                                      children: List.generate(5, (i) {
-                                        final filled =
-                                            i < prov.averageRating.round();
-                                        return Icon(
-                                          filled
-                                              ? Icons.star
-                                              : Icons.star_border,
-                                          size: 20,
-                                          color: Colors.amber,
+                                    const Icon(
+                                      Icons.qr_code_2,
+                                      size: 18,
+                                      color: AppColors.primary,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        "تسلسلي: ${widget.part.serialNumber}",
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.copy, size: 18),
+                                      onPressed: () async {
+                                        await Clipboard.setData(
+                                          ClipboardData(
+                                            text: widget.part.serialNumber!,
+                                          ),
                                         );
-                                      }),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      prov.averageRating.toStringAsFixed(1),
-                                      style: const TextStyle(
-                                          fontWeight: FontWeight.w700,
-                                          fontSize: 16),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      "(${prov.ratingsCount} تقييم)",
-                                      style: const TextStyle(
-                                          color: AppColors.textWeak),
+                                        if (!mounted) return;
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                            content:
+                                                Text("تم نسخ الرقم التسلسلي"),
+                                          ),
+                                        );
+                                      },
                                     ),
                                   ],
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        _GlassCard(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _buildDetailRow(
+                                Icons.directions_car,
+                                "الموديل",
+                                widget.part.model,
+                              ),
+                              _buildDetailRow(
+                                Icons.factory,
+                                "الماركة",
+                                widget.part.manufacturer,
+                              ),
+                              _buildDetailRow(
+                                Icons.event,
+                                "سنة الصنع",
+                                widget.part.year != 0
+                                    ? widget.part.year.toString()
+                                    : "غير محدد",
+                              ),
+                              _buildDetailRow(
+                                Icons.local_gas_station,
+                                "نوع الوقود",
+                                widget.part.fuelType,
+                              ),
+                              _buildDetailRow(
+                                Icons.category,
+                                "الفئة",
+                                widget.part.category,
+                              ),
+                              _buildDetailRow(
+                                Icons.inventory,
+                                "الكمية المتوفرة",
+                                widget.part.count.toString(),
+                              ),
+                              const SizedBox(height: 10),
+                              const Text(
+                                "الوصف",
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                widget.part.description ?? "لا يوجد وصف",
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        _GlassCard(
+                          child: Consumer<PartRatingProvider>(
+                            builder: (context, prov, _) {
+                              if (prov.isLoading) {
+                                return const Center(
+                                  child: Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
                                 );
-                              },
-                            ),
+                              }
+
+                              if (prov.ratingsCount == 0) {
+                                return const Text(
+                                  "لا توجد تقييمات بعد",
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                );
+                              }
+
+                              return Row(
+                                children: [
+                                  Row(
+                                    children: List.generate(5, (i) {
+                                      final filled =
+                                          i < prov.averageRating.round();
+                                      return Icon(
+                                        filled ? Icons.star : Icons.star_border,
+                                        size: 20,
+                                        color: Colors.amber,
+                                      );
+                                    }),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    prov.averageRating.toStringAsFixed(1),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    "(${prov.ratingsCount} تقييم)",
+                                    style: const TextStyle(
+                                      color: AppColors.textWeak,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
                           ),
-                          _GlassCard(
-                            child: _PartStarRating(partId: widget.part.id),
+                        ),
+                        _GlassCard(
+                          child: _PartStarRating(partId: widget.part.id),
+                        ),
+                        const SizedBox(height: 16),
+                        _GlassCard(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                "تقييمات الزبائن",
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              _ReviewsGate(partId: widget.part.id),
+                            ],
                           ),
-                          const SizedBox(height: 16),
-                          _GlassCard(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text("تقييمات الزبائن",
-                                    style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 8),
-                                _ReviewsGate(partId: widget.part.id),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 100),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(height: 100),
+                      ],
                     ),
                   ),
                 ),
@@ -292,8 +492,85 @@ class _PartDetailsPageState extends State<PartDetailsPage> {
           Icon(icon, size: 18, color: AppColors.primary),
           const SizedBox(width: 8),
           Text("$label: ", style: const TextStyle(fontWeight: FontWeight.bold)),
-          Expanded(child: Text(value ?? "غير متوفر")),
+          Expanded(
+            child: Text(
+              (value == null || value.isEmpty) ? "غير متوفر" : value,
+            ),
+          ),
         ],
+      ),
+    );
+  }
+}
+
+class _FullScreenGalleryPage extends StatefulWidget {
+  final List<String> images;
+  final int initialIndex;
+  final String title;
+
+  const _FullScreenGalleryPage({
+    required this.images,
+    required this.initialIndex,
+    required this.title,
+  });
+
+  @override
+  State<_FullScreenGalleryPage> createState() => _FullScreenGalleryPageState();
+}
+
+class _FullScreenGalleryPageState extends State<_FullScreenGalleryPage> {
+  late final PageController _controller;
+  late int _index;
+
+  @override
+  void initState() {
+    super.initState();
+    _index = widget.initialIndex;
+    _controller = PageController(initialPage: widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          title: Text(
+            '${widget.title} (${_index + 1}/${widget.images.length})',
+            style: const TextStyle(fontSize: 15),
+          ),
+        ),
+        body: PageView.builder(
+          controller: _controller,
+          itemCount: widget.images.length,
+          onPageChanged: (i) => setState(() => _index = i),
+          itemBuilder: (context, i) {
+            return InteractiveViewer(
+              minScale: 1.0,
+              maxScale: 4.0,
+              child: Center(
+                child: Image.network(
+                  widget.images[i],
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const Icon(
+                    Icons.broken_image_outlined,
+                    color: Colors.white54,
+                    size: 64,
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -331,9 +608,9 @@ class _CircleIconButton extends StatelessWidget {
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: onTap,
-        child: const Padding(
-          padding: EdgeInsets.all(10.0),
-          child: Icon(Icons.arrow_back, color: Colors.white),
+        child: Padding(
+          padding: const EdgeInsets.all(10.0),
+          child: Icon(icon, color: Colors.white),
         ),
       ),
     );
@@ -367,7 +644,6 @@ class _BottomAddToCartState extends State<_BottomAddToCart> {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        /// العداد
         Expanded(
           child: Container(
             height: 54,
@@ -400,10 +676,7 @@ class _BottomAddToCartState extends State<_BottomAddToCart> {
             ),
           ),
         ),
-
         const SizedBox(width: 12),
-
-        /// زر إضافة للسلة
         Expanded(
           child: ElevatedButton.icon(
             onPressed: () async {
@@ -411,6 +684,7 @@ class _BottomAddToCartState extends State<_BottomAddToCart> {
                   .read<CartProvider>()
                   .addToCartToServer(widget.part, _quantity);
 
+              if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(
@@ -528,6 +802,7 @@ class _PartStarRatingState extends State<_PartStarRating> {
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'userId': _uid, 'rating': _rating}),
       );
+      if (!mounted) return;
       if (res.statusCode >= 200 && res.statusCode < 300) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('تم إرسال تقييمك بنجاح')),
@@ -539,6 +814,7 @@ class _PartStarRatingState extends State<_PartStarRating> {
         );
       }
     } catch (_) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('تعذر الاتصال بالخادم')),
       );
@@ -599,7 +875,8 @@ class _PartStarRatingState extends State<_PartStarRating> {
               minimumSize: const Size.fromHeight(48),
               backgroundColor: AppColors.primary,
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
+                borderRadius: BorderRadius.circular(14),
+              ),
             ),
           ),
         ),

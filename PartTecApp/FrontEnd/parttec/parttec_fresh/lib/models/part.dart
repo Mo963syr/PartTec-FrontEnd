@@ -7,13 +7,14 @@ class Part {
   final String fuelType;
   final String status;
   final double price;
-  final String _imageUrl; // جعل متغيرة الرابط خاصة
+  final String _imageUrl;
   final String category;
   final String? serialNumber;
   final String? description;
   final double averageRating;
   final int reviewsCount;
   final int count;
+  final List<String> images;
 
   // رابط السيرفر الأساسي
   static const String baseUrl = 'http://187.124.131.209/';
@@ -27,28 +28,31 @@ class Part {
     required this.fuelType,
     required this.status,
     required this.price,
-    required String imageUrl, // استقبال قيمة imageUrl
+    required String imageUrl,
+    this.images = const [],
     required this.category,
     required this.count,
     this.serialNumber,
     this.description,
     this.averageRating = 0.0,
     this.reviewsCount = 0,
-  }) : _imageUrl = imageUrl; // إسنادها للمتغير الخاص
+  }) : _imageUrl = imageUrl;
 
-  // Getter لإرجاع رابط الصورة كاملاً بشكل دائم
-  String get imageUrl {
-    if (_imageUrl.isEmpty) return '';
-    
-    // إذا كان الرابط يحتوي بالفعل على http أو https نرجعه كما هو
-    if (_imageUrl.startsWith('http://') || _imageUrl.startsWith('https://')) {
-      return _imageUrl;
+  static String _resolveImageUrl(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return '';
+
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
     }
-    
-    // تنظيف السلاش الزائد من بداية مسار الصورة
-    final cleanPath = _imageUrl.startsWith('/') ? _imageUrl.substring(1) : _imageUrl;
+
+    final cleanPath =
+        trimmed.startsWith('/') ? trimmed.substring(1) : trimmed;
     return '$baseUrl$cleanPath';
   }
+
+  // Getter لإرجاع رابط الصورة الأساسي كاملاً بشكل دائم
+  String get imageUrl => _resolveImageUrl(_imageUrl);
 
   static double _asDouble(dynamic v) {
     if (v == null) return 0.0;
@@ -66,6 +70,22 @@ class Part {
   }
 
   factory Part.fromJson(Map<String, dynamic> json) {
+    final rawImages = json['images'];
+    final parsedImages = rawImages is List
+        ? rawImages
+            .map((e) => _resolveImageUrl(e?.toString() ?? ''))
+            .where((e) => e.isNotEmpty)
+            .toList()
+        : <String>[];
+
+    final primaryRaw =
+        (json['imageUrl'] ?? json['image_url'] ?? '').toString();
+    final primaryResolved = _resolveImageUrl(primaryRaw);
+
+    if (parsedImages.isEmpty && primaryResolved.isNotEmpty) {
+      parsedImages.add(primaryResolved);
+    }
+
     return Part(
       id: (json['_id'] ?? json['id'])?.toString() ?? '',
       name: json['name'] ?? '',
@@ -75,7 +95,8 @@ class Part {
       fuelType: json['fuelType'] ?? json['fuel_type'] ?? '',
       status: json['status'] ?? '',
       price: _asDouble(json['price']),
-      imageUrl: json['imageUrl'] ?? json['image_url'] ?? '',
+      imageUrl: primaryRaw,
+      images: parsedImages,
       category: json['category'] ?? '',
       count: _asInt(json['count']),
       serialNumber: json['serialNumber'] ?? json['serial_number'],
