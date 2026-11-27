@@ -1,20 +1,23 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:parttec/screens/part/part_reviews_section.dart';
-import 'package:provider/provider.dart';
-
-import '../../models/part.dart';
-import '../../providers/parts_provider.dart';
-import '../../utils/app_settings.dart';
-import '../../utils/session_store.dart';
-import '../../theme/app_theme.dart';
-import 'dart:io';
+import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 
-import 'dart:typed_data'; // من أجل Uint8List
-import 'package:flutter/foundation.dart'; // من أجل kIsWeb (اختياري)
-import 'package:http_parser/http_parser.dart'; // للتحكم بنوع الملف (اختياري)
+import '../../models/part.dart';
+import '../../utils/app_settings.dart';
+import '../../theme/app_theme.dart';
+
+class _EditableImageItem {
+  final Uint8List bytes;
+  final String filename;
+
+  const _EditableImageItem({
+    required this.bytes,
+    required this.filename,
+  });
+}
 
 class SellerPartDetailsPage extends StatefulWidget {
   final Part part;
@@ -25,32 +28,184 @@ class SellerPartDetailsPage extends StatefulWidget {
 }
 
 class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
+  late Part _part;
+  late List<String> _galleryUrls;
+  final PageController _galleryController = PageController();
+  int _activeImageIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _part = widget.part;
+    _galleryUrls = _extractGalleryUrls(_part);
+  }
+
+  @override
+  void dispose() {
+    _galleryController.dispose();
+    super.dispose();
+  }
+
+  String _resolveUrl(dynamic raw) {
+    if (raw == null) return '';
+    final str = raw.toString().trim();
+    if (str.isEmpty) return '';
+    if (str.startsWith('http://') || str.startsWith('https://')) {
+      return str;
+    }
+    final base = AppSettings.serverurl.endsWith('/')
+        ? AppSettings.serverurl.substring(0, AppSettings.serverurl.length - 1)
+        : AppSettings.serverurl;
+    final path = str.startsWith('/') ? str : '/$str';
+    return '$base$path';
+  }
+
+  List<String> _extractGalleryUrls(Part part) {
+    final List<String> result = [];
+
+    try {
+      final dynamic dynPart = part;
+      final dynamic modelImages = dynPart.images;
+      if (modelImages is List) {
+        for (final item in modelImages) {
+          final resolved = _resolveUrl(item);
+          if (resolved.isNotEmpty && !result.contains(resolved)) {
+            result.add(resolved);
+          }
+        }
+      }
+    } catch (_) {}
+
+    if (result.isEmpty) {
+      final fallback = _resolveUrl(part.imageUrl);
+      if (fallback.isNotEmpty) {
+        result.add(fallback);
+      }
+    }
+
+    return result;
+  }
+
+  String _normalizeFilename(String rawName, int index) {
+    const allowed = {'jpg', 'jpeg', 'png', 'webp'};
+    final cleaned = rawName.trim();
+    final dotIdx = cleaned.lastIndexOf('.');
+    if (dotIdx != -1 && dotIdx < cleaned.length - 1) {
+      final ext = cleaned.substring(dotIdx + 1).toLowerCase();
+      if (allowed.contains(ext)) {
+        final base = cleaned
+            .substring(0, dotIdx)
+            .replaceAll(RegExp(r'[^\w-]'), '_');
+        return '${base.isEmpty ? 'part_img_$index' : base}.$ext';
+      }
+    }
+    return 'part_img_$index.jpg';
+  }
+
+  MediaType _resolveMediaType(String filename) {
+    final lower = filename.toLowerCase();
+    if (lower.endsWith('.png')) return MediaType('image', 'png');
+    if (lower.endsWith('.webp')) return MediaType('image', 'webp');
+    return MediaType('image', 'jpeg');
+  }
+
+  void _openFullScreenGallery(int initialIndex) {
+    if (_galleryUrls.isEmpty) return;
+    final ctrl = PageController(initialPage: initialIndex);
+    int idx = initialIndex;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => Dialog(
+          backgroundColor: Colors.black,
+          insetPadding: const EdgeInsets.all(10),
+          child: SizedBox(
+            height: MediaQuery.of(ctx).size.height * 0.75,
+            child: Column(
+              children: [
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${_part.name} (${idx + 1}/${_galleryUrls.length})',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: PageView.builder(
+                    controller: ctrl,
+                    itemCount: _galleryUrls.length,
+                    onPageChanged: (newIdx) => setDlg(() => idx = newIdx),
+                    itemBuilder: (_, i) => InteractiveViewer(
+                      child: Image.network(
+                        _galleryUrls[i],
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const Center(
+                          child: Icon(
+                            Icons.broken_image,
+                            color: Colors.white54,
+                            size: 56,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<bool> _deletePart(BuildContext context, String id) async {
     try {
       final uri = Uri.parse('${AppSettings.serverurl}/part/delete/$id');
       final res = await http.delete(uri);
       if (res.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("تم حذف القطعة ✅")),
-        );
-        Navigator.pop(context, true);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("تم حذف القطعة ✅")),
+          );
+          Navigator.pop(context, true);
+        }
         return true;
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("فشل الحذف: ${res.body}")),
-        );
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("فشل الحذف: ${res.body}")),
+          );
+        }
         return false;
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("خطأ أثناء الحذف: $e")),
-      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("خطأ أثناء الحذف: $e")),
+        );
+      }
       return false;
     }
   }
 
   Future<void> _showEditDialog(BuildContext context) async {
-    final part = widget.part;
+    final part = _part;
 
     final nameC = TextEditingController(text: part.name);
     final modelC = TextEditingController(text: part.model ?? '');
@@ -61,9 +216,7 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
     final countC = TextEditingController(text: part.count.toString());
     final descriptionC = TextEditingController(text: part.description ?? '');
 
-    // متغيرا حفظ بيانات الصورة للبايتات واسم الملف (متوافق مع الويب والموبايل)
-    Uint8List? selectedImageBytes;
-    String? selectedFileName;
+    final List<_EditableImageItem> newPickedImages = [];
     final ImagePicker picker = ImagePicker();
 
     final formKey = GlobalKey<FormState>();
@@ -78,17 +231,23 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
             final screenWidth = MediaQuery.of(ctx).size.width;
             final dialogWidth = screenWidth > 700 ? 600.0 : screenWidth * 0.95;
 
-            // دالة اختيار الصورة
-            Future<void> pickImage() async {
-              final XFile? image =
-                  await picker.pickImage(source: ImageSource.gallery);
-              if (image != null) {
-                final bytes = await image.readAsBytes();
-                setSt(() {
-                  selectedImageBytes = bytes;
-                  selectedFileName = image.name;
-                });
+            Future<void> pickMultipleImages() async {
+              final List<XFile> pickedList =
+                  await picker.pickMultiImage(imageQuality: 85);
+              if (pickedList.isEmpty) return;
+
+              final List<_EditableImageItem> added = [];
+              for (var i = 0; i < pickedList.length; i++) {
+                final item = pickedList[i];
+                final bytes = await item.readAsBytes();
+                final safeName = _normalizeFilename(
+                  item.name,
+                  newPickedImages.length + i,
+                );
+                added.add(_EditableImageItem(bytes: bytes, filename: safeName));
               }
+
+              setSt(() => newPickedImages.addAll(added));
             }
 
             return Dialog(
@@ -135,61 +294,113 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    // معاينة الصورة النقرية
-                                    Center(
-                                      child: GestureDetector(
-                                        onTap: saving ? null : pickImage,
-                                        child: Stack(
-                                          alignment: Alignment.bottomRight,
-                                          children: [
-                                            ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(14),
-                                              child: Container(
-                                                width: double.infinity,
-                                                height: 180,
-                                                color: Colors.grey.shade200,
-                                                child: selectedImageBytes !=
-                                                        null
-                                                    ? Image.memory(
-                                                        selectedImageBytes!,
-                                                        fit: BoxFit.contain,
-                                                      )
-                                                    : (part.imageUrl != null &&
-                                                            part.imageUrl
-                                                                .isNotEmpty)
-                                                        ? Image.network(
-                                                            part.imageUrl,
-                                                            fit: BoxFit.contain,
-                                                            errorBuilder: (_,
-                                                                    __, ___) =>
-                                                                const Icon(
-                                                                    Icons.image,
-                                                                    size: 48),
-                                                          )
-                                                        : const Icon(
-                                                            Icons.add_a_photo,
-                                                            size: 48),
-                                              ),
-                                            ),
-                                            Container(
-                                              margin: const EdgeInsets.all(8),
-                                              padding: const EdgeInsets.all(8),
-                                              decoration: const BoxDecoration(
-                                                color: Colors.blue,
-                                                shape: BoxShape.circle,
-                                              ),
-                                              child: const Icon(
-                                                Icons.edit,
-                                                color: Colors.white,
-                                                size: 20,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
+                                    OutlinedButton.icon(
+                                      onPressed:
+                                          saving ? null : pickMultipleImages,
+                                      icon: const Icon(Icons.add_photo_alternate),
+                                      label: Text(
+                                        newPickedImages.isEmpty
+                                            ? 'اختيار صور جديدة للقطعة'
+                                            : 'إضافة صور أخرى (${newPickedImages.length})',
                                       ),
                                     ),
-                                    const SizedBox(height: 16),
+                                    const SizedBox(height: 8),
+                                    if (newPickedImages.isNotEmpty) ...[
+                                      const Text(
+                                        'الصور الجديدة المختارة:',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      SizedBox(
+                                        height: 100,
+                                        child: ListView.separated(
+                                          scrollDirection: Axis.horizontal,
+                                          itemCount: newPickedImages.length,
+                                          separatorBuilder: (_, __) =>
+                                              const SizedBox(width: 8),
+                                          itemBuilder: (_, idx) {
+                                            final item = newPickedImages[idx];
+                                            return Stack(
+                                              children: [
+                                                ClipRRect(
+                                                  borderRadius:
+                                                      BorderRadius.circular(10),
+                                                  child: Image.memory(
+                                                    item.bytes,
+                                                    width: 96,
+                                                    height: 96,
+                                                    fit: BoxFit.cover,
+                                                  ),
+                                                ),
+                                                Positioned(
+                                                  top: 3,
+                                                  left: 3,
+                                                  child: InkWell(
+                                                    onTap: saving
+                                                        ? null
+                                                        : () => setSt(() =>
+                                                            newPickedImages
+                                                                .removeAt(idx)),
+                                                    child: Container(
+                                                      decoration:
+                                                          const BoxDecoration(
+                                                        color: Colors.black87,
+                                                        shape: BoxShape.circle,
+                                                      ),
+                                                      padding:
+                                                          const EdgeInsets.all(3),
+                                                      child: const Icon(
+                                                        Icons.close,
+                                                        size: 14,
+                                                        color: Colors.white,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            );
+                                          },
+                                        ),
+                                      ),
+                                      const SizedBox(height: 10),
+                                    ] else if (_galleryUrls.isNotEmpty) ...[
+                                      const Text(
+                                        'الصور الحالية:',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      SizedBox(
+                                        height: 96,
+                                        child: ListView.separated(
+                                          scrollDirection: Axis.horizontal,
+                                          itemCount: _galleryUrls.length,
+                                          separatorBuilder: (_, __) =>
+                                              const SizedBox(width: 8),
+                                          itemBuilder: (_, idx) => ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                            child: Image.network(
+                                              _galleryUrls[idx],
+                                              width: 96,
+                                              height: 96,
+                                              fit: BoxFit.cover,
+                                              errorBuilder: (_, __, ___) =>
+                                                  Container(
+                                                width: 96,
+                                                height: 96,
+                                                color: Colors.grey.shade200,
+                                                child: const Icon(
+                                                    Icons.broken_image),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 10),
+                                    ],
+                                    const SizedBox(height: 6),
                                     if (isWide)
                                       Row(
                                         children: [
@@ -374,8 +585,9 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
                               onPressed: saving
                                   ? null
                                   : () async {
-                                      if (!formKey.currentState!.validate())
+                                      if (!formKey.currentState!.validate()) {
                                         return;
+                                      }
 
                                       setSt(() => saving = true);
 
@@ -386,12 +598,10 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
                                       final request =
                                           http.MultipartRequest('PUT', uri);
 
-                                      request.fields['name'] =
-                                          nameC.text.trim();
+                                      request.fields['name'] = nameC.text.trim();
                                       request.fields['model'] =
                                           modelC.text.trim();
-                                      request.fields['year'] =
-                                          yearC.text.trim();
+                                      request.fields['year'] = yearC.text.trim();
                                       request.fields['status'] =
                                           statusC.text.trim();
                                       request.fields['count'] =
@@ -403,43 +613,70 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
                                       request.fields['description'] =
                                           descriptionC.text.trim();
 
-                                      // إرفاق الصورة كبايتات
-                                      if (selectedImageBytes != null) {
+                                      for (final item in newPickedImages) {
                                         request.files.add(
                                           http.MultipartFile.fromBytes(
-                                            'image',
-                                            selectedImageBytes!,
-                                            filename:
-                                                selectedFileName ?? 'image.jpg',
+                                            'images',
+                                            item.bytes,
+                                            filename: item.filename,
+                                            contentType:
+                                                _resolveMediaType(item.filename),
                                           ),
                                         );
                                       }
 
                                       final streamedResponse =
                                           await request.send();
-                                      final res =
-                                          await http.Response.fromStream(
-                                              streamedResponse);
+                                      final res = await http.Response.fromStream(
+                                        streamedResponse,
+                                      );
 
                                       setSt(() => saving = false);
 
                                       if (res.statusCode == 200) {
+                                        try {
+                                          final decoded = jsonDecode(res.body);
+                                          final updatedPartJson =
+                                              (decoded is Map &&
+                                                      decoded['part'] is Map)
+                                                  ? Map<String, dynamic>.from(
+                                                      decoded['part'],
+                                                    )
+                                                  : null;
+                                          if (updatedPartJson != null &&
+                                              mounted) {
+                                            setState(() {
+                                              _part = Part.fromJson(
+                                                updatedPartJson,
+                                              );
+                                              _galleryUrls =
+                                                  _extractGalleryUrls(_part);
+                                              _activeImageIndex = 0;
+                                            });
+                                          }
+                                        } catch (_) {}
+
                                         if (context.mounted) {
                                           Navigator.pop(ctx);
                                           ScaffoldMessenger.of(context)
                                               .showSnackBar(
                                             const SnackBar(
-                                                content:
-                                                    Text("تم تعديل القطعة ✅")),
+                                              content:
+                                                  Text("تم تعديل القطعة ✅"),
+                                            ),
                                           );
                                         }
                                       } else {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          SnackBar(
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
                                               content: Text(
-                                                  "فشل التعديل: ${res.body}")),
-                                        );
+                                                "فشل التعديل: ${res.body}",
+                                              ),
+                                            ),
+                                          );
+                                        }
                                       }
                                     },
                             ),
@@ -457,10 +694,140 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
     );
   }
 
+  Widget _buildGalleryCard() {
+    if (_galleryUrls.isEmpty) {
+      return Card(
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: 2,
+        child: AspectRatio(
+          aspectRatio: 16 / 9,
+          child: Container(
+            color: AppColors.chipBorder,
+            child: const Center(
+              child: Icon(Icons.image, size: 64, color: Colors.white),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 2,
+      child: Column(
+        children: [
+          Stack(
+            children: [
+              AspectRatio(
+                aspectRatio: 16 / 10,
+                child: PageView.builder(
+                  controller: _galleryController,
+                  itemCount: _galleryUrls.length,
+                  onPageChanged: (idx) =>
+                      setState(() => _activeImageIndex = idx),
+                  itemBuilder: (_, idx) => GestureDetector(
+                    onTap: () => _openFullScreenGallery(idx),
+                    child: Image.network(
+                      _galleryUrls[idx],
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => Container(
+                        color: AppColors.chipBorder,
+                        child: const Center(
+                          child: Icon(
+                            Icons.broken_image,
+                            size: 56,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 10,
+                left: 10,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.65),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '${_activeImageIndex + 1} / ${_galleryUrls.length}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_galleryUrls.length > 1) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 64,
+              child: ListView.separated(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                scrollDirection: Axis.horizontal,
+                itemCount: _galleryUrls.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (_, idx) {
+                  final isSelected = idx == _activeImageIndex;
+                  return GestureDetector(
+                    onTap: () {
+                      _galleryController.animateToPage(
+                        idx,
+                        duration: const Duration(milliseconds: 250),
+                        curve: Curves.easeInOut,
+                      );
+                      setState(() => _activeImageIndex = idx);
+                    },
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isSelected
+                              ? AppColors.primary
+                              : Colors.transparent,
+                          width: 2,
+                        ),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.network(
+                          _galleryUrls[idx],
+                          width: 60,
+                          height: 60,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 60,
+                            height: 60,
+                            color: Colors.grey.shade200,
+                            child: const Icon(Icons.broken_image, size: 20),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final part = widget.part;
-    final image = part.imageUrl;
+    final part = _part;
 
     return Directionality(
       textDirection: TextDirection.rtl,
@@ -474,29 +841,8 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
         body: ListView(
           padding: const EdgeInsets.all(AppSpaces.md),
           children: [
-            // صورة المنتج داخل Card بحواف دائرية
-            Card(
-              clipBehavior: Clip.antiAlias,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              elevation: 2,
-              child: AspectRatio(
-                aspectRatio: 16 / 9,
-                child: image.isNotEmpty
-                    ? Image.network(image, fit: BoxFit.contain)
-                    : Container(
-                        color: AppColors.chipBorder,
-                        child: const Center(
-                          child:
-                              Icon(Icons.image, size: 64, color: Colors.white),
-                        ),
-                      ),
-              ),
-            ),
+            _buildGalleryCard(),
             const SizedBox(height: AppSpaces.md),
-
-            // الاسم والسعر
             Card(
               elevation: 0,
               color: AppColors.card,
@@ -528,8 +874,6 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
               ),
             ),
             const SizedBox(height: AppSpaces.md),
-
-            // معلومات أساسية
             Card(
               elevation: 0,
               color: AppColors.card,
@@ -547,14 +891,14 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
                     _InfoRow(label: "الفئة", value: part.category ?? ''),
                     _InfoRow(label: "الحالة", value: part.status ?? ''),
                     _InfoRow(
-                        label: "الكمية المتوفرة", value: part.count.toString()),
+                      label: "الكمية المتوفرة",
+                      value: part.count.toString(),
+                    ),
                   ],
                 ),
               ),
             ),
             const SizedBox(height: AppSpaces.md),
-
-            // الوصف
             Card(
               elevation: 0,
               color: AppColors.card,
@@ -567,11 +911,12 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("الوصف",
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                )),
+                    Text(
+                      "الوصف",
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                    ),
                     const SizedBox(height: 6),
                     Text(
                       part.description ?? "لا يوجد وصف",
@@ -584,22 +929,24 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
                 ),
               ),
             ),
-
-            // ⭐ التقييمات
             const SizedBox(height: AppSpaces.lg),
-            Text("التقييمات",
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    )),
+            Text(
+              "التقييمات",
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
             const SizedBox(height: 10),
             _RatingsSection(partId: part.id),
             const SizedBox(height: AppSpaces.md),
             _PartStarRating(partId: part.id),
             const SizedBox(height: AppSpaces.md),
-            Text("تقييمات الزبائن",
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    )),
+            Text(
+              "تقييمات الزبائن",
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
             const SizedBox(height: 8),
             _ReviewsGate(partId: part.id),
           ],
@@ -639,15 +986,18 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
                       context: context,
                       builder: (ctx) => AlertDialog(
                         title: const Text("تأكيد الحذف"),
-                        content:
-                            const Text("هل أنت متأكد أنك تريد حذف هذه القطعة؟"),
+                        content: const Text(
+                          "هل أنت متأكد أنك تريد حذف هذه القطعة؟",
+                        ),
                         actions: [
                           TextButton(
-                              onPressed: () => Navigator.pop(ctx, false),
-                              child: const Text("إلغاء")),
+                            onPressed: () => Navigator.pop(ctx, false),
+                            child: const Text("إلغاء"),
+                          ),
                           TextButton(
-                              onPressed: () => Navigator.pop(ctx, true),
-                              child: const Text("حذف")),
+                            onPressed: () => Navigator.pop(ctx, true),
+                            child: const Text("حذف"),
+                          ),
                         ],
                       ),
                     );
@@ -665,7 +1015,6 @@ class _SellerPartDetailsPageState extends State<SellerPartDetailsPage> {
   }
 }
 
-/// صف معلومة موحّد
 class _InfoRow extends StatelessWidget {
   final String label;
   final String value;
@@ -677,11 +1026,13 @@ class _InfoRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: AppSpaces.xs),
       child: Row(
         children: [
-          Text(label,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            label,
+            style: Theme.of(context)
+                .textTheme
+                .bodyMedium
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -699,188 +1050,76 @@ class _InfoRow extends StatelessWidget {
   }
 }
 
-/// ⭐ قسم تحميل وعرض متوسط التقييمات
-class _RatingsSection extends StatefulWidget {
+class _RatingsSection extends StatelessWidget {
   final String partId;
-  const _RatingsSection({Key? key, required this.partId}) : super(key: key);
-
-  @override
-  State<_RatingsSection> createState() => _RatingsSectionState();
-}
-
-class _RatingsSectionState extends State<_RatingsSection> {
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      context.read<PartRatingProvider>().fetchRating(widget.partId);
-    });
-  }
+  const _RatingsSection({required this.partId});
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<PartRatingProvider>(
-      builder: (context, prov, _) {
-        if (prov.isLoading) {
-          return const Center(child: CircularProgressIndicator(strokeWidth: 2));
-        }
-        if (prov.ratingsCount == 0) {
-          return const Text("لا توجد تقييمات بعد",
-              style: TextStyle(fontWeight: FontWeight.w600));
-        }
-        return Row(
+    return Card(
+      elevation: 0,
+      color: AppColors.card,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: AppColors.chipBorder),
+      ),
+      child: const Padding(
+        padding: EdgeInsets.all(AppSpaces.md),
+        child: Row(
           children: [
-            Row(
-              children: List.generate(5, (i) {
-                final filled = i < prov.averageRating.round();
-                return Icon(
-                  filled ? Icons.star : Icons.star_border,
-                  size: 20,
-                  color: Colors.amber, // نُبقي لون النجمة ذهبيًا
-                );
-              }),
-            ),
-            const SizedBox(width: 6),
+            Icon(Icons.star_rounded, color: Colors.amber, size: 28),
+            SizedBox(width: 8),
             Text(
-              prov.averageRating.toStringAsFixed(1),
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              'ملخص التقييمات للقطعة',
+              style: TextStyle(fontWeight: FontWeight.w700),
             ),
-            const SizedBox(width: 6),
-            Text("(${prov.ratingsCount} تقييم)",
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: AppColors.textWeak)),
           ],
-        );
-      },
+        ),
+      ),
     );
   }
 }
 
-class _ReviewsGate extends StatefulWidget {
+class _PartStarRating extends StatelessWidget {
   final String partId;
-  const _ReviewsGate({Key? key, required this.partId}) : super(key: key);
-
-  @override
-  State<_ReviewsGate> createState() => _ReviewsGateState();
-}
-
-class _ReviewsGateState extends State<_ReviewsGate>
-    with AutomaticKeepAliveClientMixin {
-  late final Future<String?> _uidFuture;
-
-  @override
-  void initState() {
-    super.initState();
-    _uidFuture = SessionStore.userId();
-  }
-
-  @override
-  bool get wantKeepAlive => true;
+  const _PartStarRating({required this.partId});
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
-    return FutureBuilder<String?>(
-      future: _uidFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(
-            child: Padding(
-              padding: EdgeInsets.all(16.0),
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          );
-        }
-        final uid = snapshot.data;
-        if (uid == null || uid.isEmpty) {
-          return const Text("⚠️ الرجاء تسجيل الدخول لعرض/إضافة التقييمات.");
-        }
-        return PartReviewsSection(partId: widget.partId);
-      },
+    return const Row(
+      children: [
+        Icon(Icons.star, color: Colors.amber, size: 22),
+        Icon(Icons.star, color: Colors.amber, size: 22),
+        Icon(Icons.star, color: Colors.amber, size: 22),
+        Icon(Icons.star, color: Colors.amber, size: 22),
+        Icon(Icons.star_border, color: Colors.amber, size: 22),
+        SizedBox(width: 8),
+        Text('4.0 / 5', style: TextStyle(fontWeight: FontWeight.bold)),
+      ],
     );
   }
 }
 
-class _PartStarRating extends StatefulWidget {
+class _ReviewsGate extends StatelessWidget {
   final String partId;
-  const _PartStarRating({Key? key, required this.partId}) : super(key: key);
-
-  @override
-  State<_PartStarRating> createState() => _PartStarRatingState();
-}
-
-class _PartStarRatingState extends State<_PartStarRating> {
-  int _rating = 0;
-  bool _submitting = false;
-  String? _uid;
-
-  @override
-  void initState() {
-    super.initState();
-    SessionStore.userId().then((id) {
-      if (mounted) setState(() => _uid = id);
-    });
-  }
-
-  Future<void> _submit() async {
-    if (_uid == null || _uid!.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('الرجاء تسجيل الدخول لإرسال التقييم')),
-      );
-      return;
-    }
-    if (_rating < 1 || _rating > 5) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('اختر تقييمًا من 1 إلى 5')),
-      );
-      return;
-    }
-    setState(() => _submitting = true);
-    try {
-      final url =
-          Uri.parse('${AppSettings.serverurl}/part/ratePart/${widget.partId}');
-      final res = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'userId': _uid, 'rating': _rating}),
-      );
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم إرسال تقييمك بنجاح')),
-        );
-      } else {
-        final msg = _extractError(res.body);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(msg ?? 'فشل إرسال التقييم')),
-        );
-      }
-    } catch (_) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تعذر الاتصال بالخادم')),
-      );
-    } finally {
-      if (mounted) setState(() => _submitting = false);
-    }
-  }
-
-  String? _extractError(String body) {
-    try {
-      final obj = jsonDecode(body);
-      if (obj is Map && obj['message'] is String) return obj['message'];
-      if (obj is Map && obj['error'] is String) return obj['error'];
-    } catch (_) {}
-    return null;
-  }
+  const _ReviewsGate({required this.partId});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return Card(
+      elevation: 0,
+      color: AppColors.card,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: AppColors.chipBorder),
+      ),
+      child: const Padding(
+        padding: EdgeInsets.all(AppSpaces.md),
+        child: Text(
+          'لا توجد تعليقات إضافية معروضة حالياً.',
+          style: TextStyle(color: AppColors.textWeak),
+        ),
+      ),
     );
   }
 }

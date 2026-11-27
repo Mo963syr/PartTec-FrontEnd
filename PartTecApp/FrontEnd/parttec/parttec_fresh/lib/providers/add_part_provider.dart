@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
@@ -10,6 +11,34 @@ class AddPartProvider extends ChangeNotifier {
   bool isLoading = false;
   String? errorMessage;
 
+  static const Set<String> _allowedExtensions = {'jpg', 'jpeg', 'png', 'webp'};
+
+  String _normalizeImageFilename(String rawName, int index) {
+    final cleaned = rawName.trim();
+    final dotIndex = cleaned.lastIndexOf('.');
+
+    if (dotIndex != -1 && dotIndex < cleaned.length - 1) {
+      final ext = cleaned.substring(dotIndex + 1).toLowerCase();
+      if (_allowedExtensions.contains(ext)) {
+        final base = cleaned
+            .substring(0, dotIndex)
+            .replaceAll(RegExp(r'[^\w-]'), '_');
+        return '${base.isEmpty ? 'part_image_$index' : base}.$ext';
+      }
+    }
+    return 'part_image_$index.jpg';
+  }
+
+  MediaType _resolveImageMediaType(String filenameOrPath) {
+    final lower = filenameOrPath.toLowerCase();
+    if (lower.endsWith('.png')) {
+      return MediaType('image', 'png');
+    } else if (lower.endsWith('.webp')) {
+      return MediaType('image', 'webp');
+    }
+    return MediaType('image', 'jpeg');
+  }
+
   Future<bool> addPart({
     required String name,
     required String manufacturer,
@@ -18,8 +47,12 @@ class AddPartProvider extends ChangeNotifier {
     required String category,
     required String status,
     required String price,
-    required String warehouse,
+    String warehouse = 'مجمع القدم',
     File? image,
+    List<http.MultipartFile>? images,
+    List<File>? imageFiles,
+    List<Uint8List>? imageBytesList,
+    List<String>? imageNames,
     String? serialNumber,
     String? description,
     int count = 1,
@@ -40,43 +73,101 @@ class AddPartProvider extends ChangeNotifier {
     final request = http.MultipartRequest('POST', uri);
 
     // 📝 الحقول الأساسية
-    request.fields['name'] = name;
-    request.fields['manufacturer'] = manufacturer;
-    request.fields['model'] = model;
-    request.fields['year'] = year;
-    request.fields['category'] = category;
-    request.fields['status'] = status;
-    request.fields['price'] = price;
-    request.fields['warehouse'] = warehouse;
+    request.fields['name'] = name.trim();
+    request.fields['manufacturer'] = manufacturer.trim();
+    request.fields['model'] = model.trim();
+    request.fields['year'] = year.trim();
+    request.fields['category'] = category.trim();
+    request.fields['status'] = status.trim();
+    request.fields['price'] = price.trim();
+    request.fields['warehouse'] =
+        warehouse.trim().isEmpty ? 'مجمع القدم' : warehouse.trim();
     request.fields['count'] = count.toString();
     request.fields['user'] = uid;
 
     // 📝 الحقول الاختيارية
-    if (serialNumber != null && serialNumber.isNotEmpty) {
-      request.fields['serialNumber'] = serialNumber;
+    if (serialNumber != null && serialNumber.trim().isNotEmpty) {
+      request.fields['serialNumber'] = serialNumber.trim();
     }
-    if (description != null && description.isNotEmpty) {
-      request.fields['description'] = description;
+    if (description != null && description.trim().isNotEmpty) {
+      request.fields['description'] = description.trim();
     }
 
-    // 🖼️ رفع الصورة
-    if (image != null && await image.exists()) {
-      // طباعة للمساعدة في التأكد من المسار أثناء الاختبار
-      debugPrint('📸 جاري إرفاق الملف: ${image.path}');
+    // 🖼️ إرفاق مصفوفة الصور تحت المفتاح 'images'
+    int attachedCount = 0;
 
-      // تحديد الامتداد بشكل دقيق
-      final ext = image.path.split('.').last.toLowerCase();
-      final mimeType = (ext == 'png') ? 'png' : 'jpeg';
-
+    if (images != null && images.isNotEmpty) {
+      for (final file in images) {
+        final safeName = _normalizeImageFilename(
+          file.filename ?? 'part_image_$attachedCount.jpg',
+          attachedCount,
+        );
+        request.files.add(
+          http.MultipartFile(
+            'images',
+            file.finalize(),
+            file.length,
+            filename: safeName,
+            contentType: _resolveImageMediaType(safeName),
+          ),
+        );
+        attachedCount++;
+      }
+    } else if (imageBytesList != null && imageBytesList.isNotEmpty) {
+      for (var i = 0; i < imageBytesList.length; i++) {
+        final bytes = imageBytesList[i];
+        final rawHint = (imageNames != null && i < imageNames.length)
+            ? imageNames[i]
+            : 'part_image_$i.jpg';
+        final safeName = _normalizeImageFilename(rawHint, i);
+        request.files.add(
+          http.MultipartFile.fromBytes(
+            'images',
+            bytes,
+            filename: safeName,
+            contentType: _resolveImageMediaType(safeName),
+          ),
+        );
+        attachedCount++;
+      }
+    } else if (imageFiles != null && imageFiles.isNotEmpty) {
+      for (final file in imageFiles) {
+        if (await file.exists()) {
+          final safeName = _normalizeImageFilename(
+            file.path.split(Platform.pathSeparator).last,
+            attachedCount,
+          );
+          request.files.add(
+            await http.MultipartFile.fromPath(
+              'images',
+              file.path,
+              filename: safeName,
+              contentType: _resolveImageMediaType(safeName),
+            ),
+          );
+          attachedCount++;
+        }
+      }
+    } else if (image != null && await image.exists()) {
+      final safeName = _normalizeImageFilename(
+        image.path.split(Platform.pathSeparator).last,
+        0,
+      );
       request.files.add(
         await http.MultipartFile.fromPath(
-          'image', // 👈 الاسم المطابق بـ Postman وسيرفر multer
+          'images',
           image.path,
-          contentType: MediaType('image', mimeType),
+          filename: safeName,
+          contentType: _resolveImageMediaType(safeName),
         ),
       );
+      attachedCount++;
+    }
+
+    if (attachedCount == 0) {
+      debugPrint('⚠️ لم يتم إرفاق أي صورة ضمن حقل images');
     } else {
-      debugPrint('⚠️ لم يتم العثور على ملف الصورة أو أن قيمته null!');
+      debugPrint('📸 تم إرفاق $attachedCount صورة ضمن حقل images');
     }
 
     try {
@@ -93,7 +184,7 @@ class AddPartProvider extends ChangeNotifier {
       }
     } catch (e) {
       errorMessage = 'خطأ أثناء الإرسال: $e';
-      debugPrint(errorMessage);
+      debugPrint('❌ $errorMessage');
       return false;
     } finally {
       isLoading = false;

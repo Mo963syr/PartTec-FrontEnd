@@ -58,6 +58,210 @@ class _AddedPartsPageState extends State<AddedPartsPage>
     categorizedParts = {for (var cat in _categories) cat: []};
   }
 
+  String _resolveFullImageUrl(dynamic raw) {
+    if (raw == null) return '';
+    final str = raw.toString().trim();
+    if (str.isEmpty) return '';
+    if (str.startsWith('http://') || str.startsWith('https://')) {
+      return str;
+    }
+    final base = AppSettings.serverurl.endsWith('/')
+        ? AppSettings.serverurl.substring(0, AppSettings.serverurl.length - 1)
+        : AppSettings.serverurl;
+    final path = str.startsWith('/') ? str : '/$str';
+    return '$base$path';
+  }
+
+  List<String> _extractPartImages(Map<String, dynamic> part) {
+    final List<String> urls = [];
+
+    final rawImages = part['images'];
+    if (rawImages is List) {
+      for (final item in rawImages) {
+        final resolved = _resolveFullImageUrl(item);
+        if (resolved.isNotEmpty && !urls.contains(resolved)) {
+          urls.add(resolved);
+        }
+      }
+    }
+
+    if (urls.isEmpty) {
+      final fallback = _resolveFullImageUrl(
+        part['imageUrl'] ?? part['image_url'] ?? part['image'],
+      );
+      if (fallback.isNotEmpty) {
+        urls.add(fallback);
+      }
+    }
+
+    return urls;
+  }
+
+  void _openImageGalleryDialog(
+    BuildContext context,
+    List<String> images,
+    int initialIndex,
+    String partName,
+  ) {
+    final pageController = PageController(initialPage: initialIndex);
+    int currentIdx = initialIndex;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => Dialog(
+          backgroundColor: Colors.black,
+          insetPadding: const EdgeInsets.all(12),
+          child: SizedBox(
+            height: MediaQuery.of(ctx).size.height * 0.7,
+            child: Column(
+              children: [
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '$partName (${currentIdx + 1}/${images.length})',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: PageView.builder(
+                    controller: pageController,
+                    itemCount: images.length,
+                    onPageChanged: (idx) {
+                      setDialogState(() => currentIdx = idx);
+                    },
+                    itemBuilder: (_, idx) => InteractiveViewer(
+                      child: Image.network(
+                        images[idx],
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const Center(
+                          child: Icon(
+                            Icons.broken_image,
+                            color: Colors.white54,
+                            size: 56,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPartImagesWidget(
+    BuildContext context,
+    List<String> images,
+    String partName,
+  ) {
+    if (images.isEmpty) {
+      return Container(
+        width: 84,
+        height: 84,
+        decoration: BoxDecoration(
+          color: Colors.grey[200],
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Icon(Icons.image, size: 38, color: Colors.grey),
+      );
+    }
+
+    if (images.length == 1) {
+      return GestureDetector(
+        onTap: () => _openImageGalleryDialog(context, images, 0, partName),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.network(
+            images.first,
+            width: 84,
+            height: 84,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Container(
+              width: 84,
+              height: 84,
+              color: Colors.grey[200],
+              child: const Icon(Icons.broken_image, color: Colors.grey),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      width: 176,
+      height: 84,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: images.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 6),
+        itemBuilder: (context, imgIndex) {
+          return GestureDetector(
+            onTap: () =>
+                _openImageGalleryDialog(context, images, imgIndex, partName),
+            child: Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.network(
+                    images[imgIndex],
+                    width: 84,
+                    height: 84,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      width: 84,
+                      height: 84,
+                      color: Colors.grey[200],
+                      child: const Icon(Icons.broken_image, color: Colors.grey),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  bottom: 4,
+                  left: 4,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.65),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '${imgIndex + 1}/${images.length}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> fetchParts() async {
     setState(() => isLoading = true);
     try {
@@ -196,7 +400,7 @@ class _AddedPartsPageState extends State<AddedPartsPage>
                         final Map<String, dynamic> part =
                             Map<String, dynamic>.from(displayed[index]);
 
-                        final imageUrl = part['imageUrl']?.toString();
+                        final images = _extractPartImages(part);
                         final name = part['name']?.toString() ?? 'بدون اسم';
                         final manufacturer =
                             part['manufacturer']?.toString() ?? 'غير محدد';
@@ -235,36 +439,9 @@ class _AddedPartsPageState extends State<AddedPartsPage>
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  // صورة القطعة
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: (imageUrl != null &&
-                                            imageUrl.isNotEmpty)
-                                        ? Image.network(
-                                            imageUrl,
-                                            width: 80,
-                                            height: 80,
-                                            fit: BoxFit.cover,
-                                            errorBuilder:
-                                                (context, error, stackTrace) {
-                                              return Container(
-                                                width: 80,
-                                                height: 80,
-                                                color: Colors.grey[200],
-                                                child: const Icon(
-                                                    Icons.broken_image,
-                                                    color: Colors.grey),
-                                              );
-                                            },
-                                          )
-                                        : Container(
-                                            width: 80,
-                                            height: 80,
-                                            color: Colors.grey[200],
-                                            child: const Icon(Icons.image,
-                                                size: 40, color: Colors.grey),
-                                          ),
-                                  ),
+                                  // صور القطعة من مصفوفة images
+                                  _buildPartImagesWidget(
+                                      context, images, name),
                                   const SizedBox(width: 12),
 
                                   // تفاصيل القطعة
